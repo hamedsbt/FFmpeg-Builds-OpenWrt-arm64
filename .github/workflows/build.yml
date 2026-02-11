@@ -66,15 +66,6 @@ jobs:
         echo "SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*')" >> $GITHUB_ENV
 
     # ------------------------------------------------------------
-    # Setup OpenWrt toolchain env
-    # ------------------------------------------------------------
-    - name: Setup toolchain
-      run: |
-        source $SDK_DIR/env
-        echo "STAGING_DIR=$STAGING_DIR" >> $GITHUB_ENV
-        echo "PATH=$PATH" >> $GITHUB_ENV
-
-    # ------------------------------------------------------------
     # Build dependencies (static)
     # ------------------------------------------------------------
 
