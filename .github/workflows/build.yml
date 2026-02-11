@@ -10,7 +10,7 @@ on:
     - cron: '23 4 * * *'   # randomized for fork safety
 
 env:
-  OPENWRT_VERSION: "24.10.2"
+  OPENWRT_VERSION: "24.10.5"
   OPENWRT_TARGET: "bcm27xx"
   OPENWRT_SUBTARGET: "bcm2711"
   ARCH_TRIPLET: "aarch64-openwrt-linux-musl"
@@ -58,9 +58,9 @@ jobs:
     # ------------------------------------------------------------
     - name: Download OpenWrt SDK
       run: |
-        SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/openwrt-sdk-${OPENWRT_VERSION}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}_gcc-12.3.0_musl.Linux-x86_64.tar.xz"
+        SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/openwrt-sdk-${OPENWRT_VERSION}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
         echo "Dynamic sdk url: $SDK_URL"
-        SDK_URL="https://downloads.openwrt.org/releases/24.10.5/targets/bcm27xx/bcm2711/openwrt-sdk-24.10.5-bcm27xx-bcm2711_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+        SDK_URLX="https://downloads.openwrt.org/releases/24.10.5/targets/bcm27xx/bcm2711/openwrt-sdk-24.10.5-bcm27xx-bcm2711_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
         wget $SDK_URL -O sdk.tar.zst
         tar xf sdk.tar.zst
         echo "SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*')" >> $GITHUB_ENV
@@ -70,9 +70,9 @@ jobs:
     # ------------------------------------------------------------
     - name: Setup toolchain
       run: |
-        TOOLCHAIN_DIR="$SDK_DIR/staging_dir/toolchain-*"
-        echo "TOOLCHAIN_DIR=$(echo $TOOLCHAIN_DIR)" >> $GITHUB_ENV
-        echo "$TOOLCHAIN_DIR/bin" >> $GITHUB_PATH
+        source $SDK_DIR/env
+        echo "STAGING_DIR=$STAGING_DIR" >> $GITHUB_ENV
+        echo "PATH=$PATH" >> $GITHUB_ENV
 
     # ------------------------------------------------------------
     # Build dependencies (static)
