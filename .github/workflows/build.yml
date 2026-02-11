@@ -82,30 +82,33 @@ jobs:
       run: |
         git clone https://github.com/mstorsjo/fdk-aac.git
         cd fdk-aac
+    
+        export STAGING_DIR=$SDK_DIR/staging_dir
+        TOOLCHAIN=$(ls -d $STAGING_DIR/toolchain-*)
+        export PATH=$TOOLCHAIN/bin:$PATH
+    
+        export CC=${ARCH_TRIPLET}-gcc
+        export CXX=${ARCH_TRIPLET}-g++
+        export AR=${ARCH_TRIPLET}-ar
+        export AS=${ARCH_TRIPLET}-as
+        export LD=${ARCH_TRIPLET}-ld
+        export STRIP=${ARCH_TRIPLET}-strip
+    
+        export CFLAGS="--sysroot=$TOOLCHAIN"
+        export LDFLAGS="--sysroot=$TOOLCHAIN"
+    
         autoreconf -fiv
-        CC=${ARCH_TRIPLET}-gcc \
         ./configure \
           --host=${ARCH_TRIPLET} \
           --disable-shared \
           --enable-static \
           --prefix=$PWD/build
+    
         make -j$(nproc)
         make install
+    
         echo "FDK_PATH=$PWD/build" >> $GITHUB_ENV
 
-    - name: Build x264
-      run: |
-        git clone https://code.videolan.org/videolan/x264.git
-        cd x264
-        CC=${ARCH_TRIPLET}-gcc \
-        ./configure \
-          --host=${ARCH_TRIPLET} \
-          --enable-static \
-          --disable-opencl \
-          --prefix=$PWD/build
-        make -j$(nproc)
-        make install
-        echo "X264_PATH=$PWD/build" >> $GITHUB_ENV
 
     # ------------------------------------------------------------
     # Configure & Build FFmpeg
