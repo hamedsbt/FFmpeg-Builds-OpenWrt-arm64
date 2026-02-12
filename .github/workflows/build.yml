@@ -16,118 +16,130 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
 
     steps:
-    # ------------------------------------------------------------
-    # Install host deps
-    # ------------------------------------------------------------
-    - name: Install dependencies
+    - name: Install host deps
       run: |
         sudo apt update
         sudo apt install -y \
           build-essential autoconf automake libtool \
           pkg-config yasm nasm meson ninja-build \
-          cmake git wget curl python3 zstd
+          cmake git wget curl python3 zstd bzip2
 
-    # ------------------------------------------------------------
-    # Download OpenWrt SDK (auto detect)
-    # ------------------------------------------------------------
+    # Download SDK (auto-detect)
     - name: Download OpenWrt SDK
       run: |
-        set -e
-
+        set -euo pipefail
         BASE_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/"
-
+        echo "Listing $BASE_URL"
         SDK_FILE=$(curl -s "$BASE_URL" | \
           grep -oP 'openwrt-sdk-[^"]+musl\.Linux-x86_64\.tar\.(zst|xz)' | \
           head -n1)
-
-        if [ -z "$SDK_FILE" ]; then
-          echo "SDK not found"
+        if [[ -z "$SDK_FILE" ]]; then
+          echo "ERROR: could not detect SDK file at $BASE_URL"
           exit 1
         fi
-
-        echo "Downloading $SDK_FILE"
-        wget "${BASE_URL}${SDK_FILE}"
-
+        echo "Detected SDK: $SDK_FILE"
+        wget -q --show-progress "${BASE_URL}${SDK_FILE}"
         if [[ "$SDK_FILE" == *.zst ]]; then
           tar -I zstd -xf "$SDK_FILE"
         else
           tar -xf "$SDK_FILE"
         fi
-
         SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*' | head -n1)
+        if [[ -z "$SDK_DIR" ]]; then
+          echo "ERROR: SDK_DIR not found after extraction"
+          ls -la
+          exit 2
+        fi
         echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
+        echo "Extracted SDK_DIR=$SDK_DIR"
+        ls -la "$SDK_DIR"
 
-    # ------------------------------------------------------------
-    # Setup OpenWrt toolchain environment
-    # ------------------------------------------------------------
+    # Setup toolchain env and persist PATH for next steps
     - name: Setup toolchain
       run: |
-        set -e
-    
+        set -euo pipefail
         STAGING_DIR="$SDK_DIR/staging_dir"
-    
-        TOOLCHAIN_DIR=$(ls -d "$STAGING_DIR"/toolchain-* | head -n1)
-        TARGET_DIR=$(ls -d "$STAGING_DIR"/target-* | head -n1)
-    
+        if [[ ! -d "$STAGING_DIR" ]]; then
+          echo "ERROR: staging_dir missing in $SDK_DIR"
+          ls -la "$SDK_DIR"
+          exit 1
+        fi
+        TOOLCHAIN_DIR=$(ls -d "$STAGING_DIR"/toolchain-* 2>/dev/null | head -n1 || true)
+        TARGET_DIR=$(ls -d "$STAGING_DIR"/target-* 2>/dev/null | head -n1 || true)
+        if [[ -z "$TOOLCHAIN_DIR" || -z "$TARGET_DIR" ]]; then
+          echo "ERROR: Could not find toolchain or target dirs"
+          echo "staging_dir listing:"
+          ls -la "$STAGING_DIR"
+          exit 1
+        fi
         echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR" >> $GITHUB_ENV
         echo "TARGET_DIR=$TARGET_DIR" >> $GITHUB_ENV
-    
-        # Persist compiler path for ALL next steps
+        # Persist for subsequent steps
         echo "$TOOLCHAIN_DIR/bin" >> $GITHUB_PATH
-    
-        # Verify compiler exists
-        ls -la "$TOOLCHAIN_DIR/bin"
+        echo "Wrote toolchain bin to GITHUB_PATH"
+        echo "Toolchain bins:"
+        ls -la "$TOOLCHAIN_DIR/bin" | sed -n '1,200p'
+        # Quick verification of compiler
         "$TOOLCHAIN_DIR/bin/${ARCH_TRIPLET}-gcc" -v
 
-
-    # ------------------------------------------------------------
-    # Build x264 (static)
-    # ------------------------------------------------------------
-    - name: Build x264
+    # Build static x264
+    - name: Build x264 (static)
+      env:
+        TARGET_DIR: ${{ env.TARGET_DIR }}
+        TOOLCHAIN_DIR: ${{ env.TOOLCHAIN_DIR }}
       run: |
-        set -e
-    
+        set -euo pipefail
         git clone --depth=1 https://code.videolan.org/videolan/x264.git
         cd x264
-    
-        export CC=${ARCH_TRIPLET}-gcc
-        export AR=${ARCH_TRIPLET}-ar
-        export RANLIB=${ARCH_TRIPLET}-ranlib
-        export STRIP=${ARCH_TRIPLET}-strip
-    
-        export CFLAGS="--sysroot=$TARGET_DIR"
-        export LDFLAGS="--sysroot=$TARGET_DIR"
-    
+
+        # Use full path to cross tools to avoid any PATH issues
+        export CC="$TOOLCHAIN_DIR/bin/${ARCH_TRIPLET}-gcc"
+        export AR="$TOOLCHAIN_DIR/bin/${ARCH_TRIPLET}-ar"
+        export RANLIB="$TOOLCHAIN_DIR/bin/${ARCH_TRIPLET}-ranlib"
+        export STRIP="$TOOLCHAIN_DIR/bin/${ARCH_TRIPLET}-strip"
+
+        # Sysroot must point to target-* (headers/libs for link tests)
+        export CFLAGS="--sysroot=$TARGET_DIR -I$TARGET_DIR/usr/include"
+        export LDFLAGS="--sysroot=$TARGET_DIR -L$TARGET_DIR/usr/lib"
+
+        echo "CC=$CC"
+        echo "CFLAGS=$CFLAGS"
+        echo "LDFLAGS=$LDFLAGS"
+
+        # x264 configure does not accept --build reliably in some trees; use host + cross-prefix only
         ./configure \
-          --build=$(gcc -dumpmachine) \
           --host=${ARCH_TRIPLET} \
           --cross-prefix=${ARCH_TRIPLET}- \
           --enable-static \
           --disable-opencl \
           --disable-cli \
           --prefix=$PWD/build
-    
+
         make -j$(nproc)
         make install
-    
+
         echo "X264_PATH=$PWD/build" >> $GITHUB_ENV
 
-
-    # ------------------------------------------------------------
-    # Build fdk-aac (static nonfree)
-    # ------------------------------------------------------------
-    - name: Build fdk-aac
+    # Build fdk-aac (static)
+    - name: Build fdk-aac (static)
+      env:
+        TARGET_DIR: ${{ env.TARGET_DIR }}
+        TOOLCHAIN_DIR: ${{ env.TOOLCHAIN_DIR }}
       run: |
-        set -e
-
-        git clone https://github.com/mstorsjo/fdk-aac.git
+        set -euo pipefail
+        git clone --depth=1 https://github.com/mstorsjo/fdk-aac.git
         cd fdk-aac
 
-        export CC=${ARCH_TRIPLET}-gcc
-        export CFLAGS="--sysroot=$TARGET_DIR"
-        export LDFLAGS="--sysroot=$TARGET_DIR"
+        export CC="$TOOLCHAIN_DIR/bin/${ARCH_TRIPLET}-gcc"
+        export AR="$TOOLCHAIN_DIR/bin/${ARCH_TRIPLET}-ar"
+        export RANLIB="$TOOLCHAIN_DIR/bin/${ARCH_TRIPLET}-ranlib"
+        export STRIP="$TOOLCHAIN_DIR/bin/${ARCH_TRIPLET}-strip"
+
+        export CFLAGS="--sysroot=$TARGET_DIR -I$TARGET_DIR/usr/include"
+        export LDFLAGS="--sysroot=$TARGET_DIR -L$TARGET_DIR/usr/lib"
 
         autoreconf -fiv
 
@@ -142,19 +154,21 @@ jobs:
 
         echo "FDK_PATH=$PWD/build" >> $GITHUB_ENV
 
-    # ------------------------------------------------------------
     # Build FFmpeg (fully static)
-    # ------------------------------------------------------------
-    - name: Build FFmpeg
+    - name: Build FFmpeg (static, nonfree)
+      env:
+        TARGET_DIR: ${{ env.TARGET_DIR }}
+        TOOLCHAIN_DIR: ${{ env.TOOLCHAIN_DIR }}
       run: |
-        set -e
+        set -euo pipefail
 
         git clone --depth=1 https://git.ffmpeg.org/ffmpeg.git FFmpeg
         cd FFmpeg
 
-        export CC=${ARCH_TRIPLET}-gcc
-        export CFLAGS="--sysroot=$TARGET_DIR"
-        export LDFLAGS="--sysroot=$TARGET_DIR -static"
+        export CC="$TOOLCHAIN_DIR/bin/${ARCH_TRIPLET}-gcc"
+        export PKG_CONFIG=false
+        export CFLAGS="--sysroot=$TARGET_DIR -I${X264_PATH}/include -I${FDK_PATH}/include -I$TARGET_DIR/usr/include"
+        export LDFLAGS="--sysroot=$TARGET_DIR -static -L${X264_PATH}/lib -L${FDK_PATH}/lib -L$TARGET_DIR/usr/lib"
 
         ./configure \
           --prefix=$PWD/build \
@@ -171,24 +185,26 @@ jobs:
           --disable-ffplay \
           --enable-libx264 \
           --enable-libfdk-aac \
-          --extra-cflags="--sysroot=$TARGET_DIR -I${X264_PATH}/include -I${FDK_PATH}/include" \
-          --extra-ldflags="--sysroot=$TARGET_DIR -static -L${X264_PATH}/lib -L${FDK_PATH}/lib"
+          --extra-cflags="$CFLAGS" \
+          --extra-ldflags="$LDFLAGS"
 
         make -j$(nproc)
         make install
 
-    # ------------------------------------------------------------
-    # Verify static binary
-    # ------------------------------------------------------------
-    - name: Verify
+    - name: Verify artifact
       run: |
         file FFmpeg/build/bin/ffmpeg
-        ldd FFmpeg/build/bin/ffmpeg || echo "Static binary confirmed"
+        # ldd returns non-zero for static; capture textual check
+        if ldd FFmpeg/build/bin/ffmpeg 2>&1 | grep -qi 'not a dynamic executable'; then
+          echo "Binary is static (expected)."
+        else
+          echo "WARNING: ldd did not report static. Output:"
+          ldd FFmpeg/build/bin/ffmpeg || true
+        fi
+        echo "ffmpeg size:"
+        ls -lh FFmpeg/build/bin/ffmpeg
 
-    # ------------------------------------------------------------
-    # Upload artifact
-    # ------------------------------------------------------------
-    - name: Upload
+    - name: Upload artifact
       uses: actions/upload-artifact@v4
       with:
         name: ffmpeg-openwrt-24.10.x-pi4-nonfree-static
