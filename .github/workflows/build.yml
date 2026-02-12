@@ -56,49 +56,154 @@ jobs:
     # ------------------------------------------------------------
     # Download OpenWrt SDK
     # ------------------------------------------------------------
-    - name: Download OpenWrt SDK
+    - name: Download & extract OpenWrt SDK (robust)
       run: |
-        SDK_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/openwrt-sdk-${OPENWRT_VERSION}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
-        echo "Dynamic sdk url: $SDK_URL"
-        SDK_URLX="https://downloads.openwrt.org/releases/24.10.5/targets/bcm27xx/bcm2711/openwrt-sdk-24.10.5-bcm27xx-bcm2711_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
-        wget $SDK_URL -O sdk.tar.zst
-        tar xf sdk.tar.zst
-        echo "SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*')" >> $GITHUB_ENV
+        set -euo pipefail
+
+        echo "OPENWRT_VERSION=${OPENWRT_VERSION}"
+        echo "OPENWRT_TARGET=${OPENWRT_TARGET}"
+        echo "OPENWRT_SUBTARGET=${OPENWRT_SUBTARGET}"
+
+        # Try dynamic name first (if you want to change gcc version edit the suffix)
+        SDK_BASE="openwrt-sdk-${OPENWRT_VERSION}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}"
+        SDK_FILENAME_XZ="${SDK_BASE}_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
+        SDK_FILENAME_ZST="${SDK_BASE}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
+
+        # Prefer .zst if available on server; try zst then xz
+        SDK_URL_ZST="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${SDK_FILENAME_ZST}"
+        SDK_URL_XZ="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${SDK_FILENAME_XZ}"
+
+        echo "Trying ZST URL: $SDK_URL_ZST"
+        if curl -fS --head "$SDK_URL_ZST" > /dev/null 2>&1; then
+          SDK_URL="$SDK_URL_ZST"
+          SDK_FILE="sdk.tar.zst"
+        elif curl -fS --head "$SDK_URL_XZ" > /dev/null 2>&1; then
+          SDK_URL="$SDK_URL_XZ"
+          SDK_FILE="sdk.tar.xz"
+        else
+          echo "ERROR: SDK not found at either URL:"
+          echo "  $SDK_URL_ZST"
+          echo "  $SDK_URL_XZ"
+          exit 2
+        fi
+
+        echo "Downloading $SDK_URL"
+        wget -q --show-progress "$SDK_URL" -O "$SDK_FILE"
+
+        # extract depending on compression
+        if [[ "$SDK_FILE" == *.zst ]]; then
+          # ensure zstd is available
+          if ! command -v unzstd >/dev/null 2>&1 && ! command -v zstd >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y zstd
+          fi
+          # use tar with zstd if available, otherwise unzstd then tar
+          if tar --version | grep -q '\--use-compress-program'; then
+            tar -I zstd -xf "$SDK_FILE"
+          else
+            unzstd "$SDK_FILE"
+            TARFILE="${SDK_FILE%.zst}"
+            tar -xf "$TARFILE"
+          fi
+        else
+          tar -xf "$SDK_FILE"
+        fi
+
+        # find the extracted SDK dir
+        SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*' -print -quit || true)
+        if [[ -z "$SDK_DIR" ]]; then
+          echo "ERROR: SDK directory not found after extraction. Listing current dir:"
+          ls -la
+          exit 3
+        fi
+
+        echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
+        echo "SDK_DIR is set to $SDK_DIR"
+        echo "Listing $SDK_DIR:"
+        ls -la "$SDK_DIR"
+
+        # verify staging_dir exists
+        if [[ ! -d "$SDK_DIR/staging_dir" ]]; then
+          echo "ERROR: $SDK_DIR/staging_dir not found. Dumping SDK contents for debugging:"
+          ls -la "$SDK_DIR"
+          exit 4
+        fi
+
+        echo "OpenWrt SDK extracted and staging_dir present."
+
+    - name: Debug SDK layout
+      run: |
+        echo "SDK_DIR = $SDK_DIR"
+        ls -la "$SDK_DIR"
+        echo "staging_dir listing:"
+        ls -la "$SDK_DIR/staging_dir" || true
+        echo "toolchain dirs:"
+        ls -la "$SDK_DIR/staging_dir" | grep toolchain || true
 
     # ------------------------------------------------------------
     # Build dependencies (static)
     # ------------------------------------------------------------
 
-    - name: Build fdk-aac (nonfree)
+    - name: Build fdk-aac (nonfree) — OpenWrt toolchain aware
       run: |
+        set -euo pipefail
         git clone https://github.com/mstorsjo/fdk-aac.git
         cd fdk-aac
-    
-        export STAGING_DIR=$SDK_DIR/staging_dir
-        TOOLCHAIN=$(ls -d $STAGING_DIR/toolchain-*)
-        export PATH=$TOOLCHAIN/bin:$PATH
-    
+
+        # Use SDK_DIR set in previous step
+        if [[ -z "${SDK_DIR:-}" ]]; then
+          echo "ERROR: SDK_DIR is not set"
+          exit 1
+        fi
+
+        export STAGING_DIR="$SDK_DIR/staging_dir"
+        echo "STAGING_DIR=$STAGING_DIR"
+
+        # find the toolchain directory (take first match)
+        TOOLCHAIN_DIR=$(ls -d "$STAGING_DIR"/toolchain-* 2>/dev/null | head -n1 || true)
+        if [[ -z "$TOOLCHAIN_DIR" ]]; then
+          echo "ERROR: no toolchain found under $STAGING_DIR"
+          echo "Here's the staging_dir listing:"
+          ls -la "$STAGING_DIR"
+          exit 2
+        fi
+        echo "TOOLCHAIN_DIR=$TOOLCHAIN_DIR"
+
+        export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+        echo "PATH updated with toolchain bin"
+
+        # set triplet (from env)
         export CC=${ARCH_TRIPLET}-gcc
         export CXX=${ARCH_TRIPLET}-g++
         export AR=${ARCH_TRIPLET}-ar
         export AS=${ARCH_TRIPLET}-as
         export LD=${ARCH_TRIPLET}-ld
         export STRIP=${ARCH_TRIPLET}-strip
-    
-        export CFLAGS="--sysroot=$TOOLCHAIN"
-        export LDFLAGS="--sysroot=$TOOLCHAIN"
-    
+
+        # sysroot for compiler/linker
+        # use the full toolchain dir as sysroot - it's correct for OpenWrt SDK layout
+        SYSROOT="$TOOLCHAIN_DIR"
+        export CFLAGS="--sysroot=$SYSROOT"
+        export LDFLAGS="--sysroot=$SYSROOT"
+
+        echo "CC=$CC"
+        echo "CFLAGS=$CFLAGS"
+        echo "LDFLAGS=$LDFLAGS"
+
         autoreconf -fiv
+
+        # configure with host set to triplet
         ./configure \
-          --host=${ARCH_TRIPLET} \
+          --host="${ARCH_TRIPLET}" \
           --disable-shared \
           --enable-static \
-          --prefix=$PWD/build
-    
+          --prefix="$PWD/build"
+
         make -j$(nproc)
         make install
-    
+
         echo "FDK_PATH=$PWD/build" >> $GITHUB_ENV
+
 
 
     # ------------------------------------------------------------
