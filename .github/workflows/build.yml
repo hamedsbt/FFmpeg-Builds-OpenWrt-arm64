@@ -88,26 +88,32 @@ jobs:
     - name: Build x264
       run: |
         set -e
-
+    
         git clone --depth=1 https://code.videolan.org/videolan/x264.git
         cd x264
-
+    
         export CC=${ARCH_TRIPLET}-gcc
+        export AR=${ARCH_TRIPLET}-ar
+        export RANLIB=${ARCH_TRIPLET}-ranlib
+        export STRIP=${ARCH_TRIPLET}-strip
+    
         export CFLAGS="--sysroot=$TARGET_DIR"
         export LDFLAGS="--sysroot=$TARGET_DIR"
-
+    
         ./configure \
+          --build=$(gcc -dumpmachine) \
           --host=${ARCH_TRIPLET} \
           --cross-prefix=${ARCH_TRIPLET}- \
           --enable-static \
           --disable-opencl \
           --disable-cli \
           --prefix=$PWD/build
-
+    
         make -j$(nproc)
         make install
-
+    
         echo "X264_PATH=$PWD/build" >> $GITHUB_ENV
+
 
     # ------------------------------------------------------------
     # Build fdk-aac (static nonfree)
