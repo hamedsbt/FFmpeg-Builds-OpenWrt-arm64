@@ -56,80 +56,42 @@ jobs:
     # ------------------------------------------------------------
     # Download OpenWrt SDK
     # ------------------------------------------------------------
-    - name: Download & extract OpenWrt SDK (robust)
+    - name: Download OpenWrt SDK (auto-detect GCC version)
       run: |
         set -euo pipefail
-
-        echo "OPENWRT_VERSION=${OPENWRT_VERSION}"
-        echo "OPENWRT_TARGET=${OPENWRT_TARGET}"
-        echo "OPENWRT_SUBTARGET=${OPENWRT_SUBTARGET}"
-
-        # Try dynamic name first (if you want to change gcc version edit the suffix)
-        SDK_BASE="openwrt-sdk-${OPENWRT_VERSION}-${OPENWRT_TARGET}-${OPENWRT_SUBTARGET}"
-        SDK_FILENAME_XZ="${SDK_BASE}_gcc-13.3.0_musl.Linux-x86_64.tar.xz"
-        SDK_FILENAME_ZST="${SDK_BASE}_gcc-13.3.0_musl.Linux-x86_64.tar.zst"
-
-        # Prefer .zst if available on server; try zst then xz
-        SDK_URL_ZST="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${SDK_FILENAME_ZST}"
-        SDK_URL_XZ="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/${SDK_FILENAME_XZ}"
-
-        echo "Trying ZST URL: $SDK_URL_ZST"
-        if curl -fS --head "$SDK_URL_ZST" > /dev/null 2>&1; then
-          SDK_URL="$SDK_URL_ZST"
-          SDK_FILE="sdk.tar.zst"
-        elif curl -fS --head "$SDK_URL_XZ" > /dev/null 2>&1; then
-          SDK_URL="$SDK_URL_XZ"
-          SDK_FILE="sdk.tar.xz"
-        else
-          echo "ERROR: SDK not found at either URL:"
-          echo "  $SDK_URL_ZST"
-          echo "  $SDK_URL_XZ"
-          exit 2
+    
+        BASE_URL="https://downloads.openwrt.org/releases/${OPENWRT_VERSION}/targets/${OPENWRT_TARGET}/${OPENWRT_SUBTARGET}/"
+    
+        echo "Listing SDK directory:"
+        curl -s "$BASE_URL" | grep openwrt-sdk
+    
+        SDK_FILE=$(curl -s "$BASE_URL" | \
+          grep -oP 'openwrt-sdk-[^"]+musl\.Linux-x86_64\.tar\.(zst|xz)' | \
+          head -n1)
+    
+        if [[ -z "$SDK_FILE" ]]; then
+          echo "ERROR: Could not detect SDK filename automatically"
+          exit 1
         fi
-
-        echo "Downloading $SDK_URL"
-        wget -q --show-progress "$SDK_URL" -O "$SDK_FILE"
-
-        # extract depending on compression
+    
+        echo "Detected SDK file: $SDK_FILE"
+    
+        wget "${BASE_URL}${SDK_FILE}"
+    
         if [[ "$SDK_FILE" == *.zst ]]; then
-          # ensure zstd is available
-          if ! command -v unzstd >/dev/null 2>&1 && ! command -v zstd >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y zstd
-          fi
-          # use tar with zstd if available, otherwise unzstd then tar
-          if tar --version | grep -q '\--use-compress-program'; then
-            tar -I zstd -xf "$SDK_FILE"
-          else
-            unzstd "$SDK_FILE"
-            TARFILE="${SDK_FILE%.zst}"
-            tar -xf "$TARFILE"
-          fi
+          sudo apt-get update
+          sudo apt-get install -y zstd
+          tar -I zstd -xf "$SDK_FILE"
         else
           tar -xf "$SDK_FILE"
         fi
-
-        # find the extracted SDK dir
-        SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*' -print -quit || true)
-        if [[ -z "$SDK_DIR" ]]; then
-          echo "ERROR: SDK directory not found after extraction. Listing current dir:"
-          ls -la
-          exit 3
-        fi
-
+    
+        SDK_DIR=$(find . -maxdepth 1 -type d -name 'openwrt-sdk-*' | head -n1)
         echo "SDK_DIR=$SDK_DIR" >> $GITHUB_ENV
-        echo "SDK_DIR is set to $SDK_DIR"
-        echo "Listing $SDK_DIR:"
+    
+        echo "Extracted SDK contents:"
         ls -la "$SDK_DIR"
 
-        # verify staging_dir exists
-        if [[ ! -d "$SDK_DIR/staging_dir" ]]; then
-          echo "ERROR: $SDK_DIR/staging_dir not found. Dumping SDK contents for debugging:"
-          ls -la "$SDK_DIR"
-          exit 4
-        fi
-
-        echo "OpenWrt SDK extracted and staging_dir present."
 
     - name: Debug SDK layout
       run: |
